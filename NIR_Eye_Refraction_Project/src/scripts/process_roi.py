@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import yaml
-import shutil  # [新增] 用于删除废弃的文件夹
 
 # --- 系统路径设置 ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -56,7 +55,7 @@ class ROIExtractor:
 
         # 4. 坐标映射回原图
         # max_loc_region 是相对于 search_region 的 (x, y)
-        # 我们需要加上 y_start 偏移量
+        # 加上 y_start 偏移量
         center_x = max_loc_region[0]
         center_y = max_loc_region[1] + y_start
 
@@ -127,6 +126,9 @@ def main():
     OUTPUT_CSV = os.path.join(project_root, os.path.dirname(config['paths']['output_csv']),
                               "processed_dataset_split.csv")
 
+    # 剔除原因的 CSV 路径
+    REJECT_CSV = os.path.join(project_root, config['paths']['logs_dir'], "roi_reject_details.csv")
+
     extractor = ROIExtractor(config)
 
     if not os.path.exists(INPUT_CSV):
@@ -137,7 +139,9 @@ def main():
     print(f"🚀 开始 ROI 分割处理 (双眼拆分 + 抗干扰), 源样本数: {len(df)}")
 
     final_rows = []
-    padding_reject_log = []
+
+    #使用列表存储字典，方便最后转 CSV
+    reject_records = []
 
     for index, row in tqdm(df.iterrows(), total=len(df)):
         sample_id = row['sample_id']
@@ -153,7 +157,7 @@ def main():
             new_sample_id = f"{sample_id}{eye['suffix']}"
             sample_out_dir = os.path.join(OUTPUT_DIR, new_sample_id)
 
-            # 确保目录存在（如果是重跑，覆盖模式下这个文件夹可能已经有旧图了，不过后续会覆盖）
+            # 确保目录存在
             os.makedirs(sample_out_dir, exist_ok=True)
 
             new_row = {
@@ -174,11 +178,20 @@ def main():
                 src_path = os.path.join(folder_abs_path, img_name)
 
                 if not os.path.exists(src_path):
+                    # 缺图记录
+                    reject_records.append({
+                        "Sample_ID": new_sample_id,
+                        "Reason": f"缺失源文件: {img_name}"
+                    })
                     eye_success = False
                     break
 
                 full_img = cv2.imread(src_path, cv2.IMREAD_GRAYSCALE)
                 if full_img is None:
+                    reject_records.append({
+                        "Sample_ID": new_sample_id,
+                        "Reason": f"无法读取源文件: {img_name}"
+                    })
                     eye_success = False
                     break
 
@@ -194,53 +207,64 @@ def main():
                     center, max_val = extractor.find_pupil_center_robust(half_img)
                     roi, padding_ratio = extractor.crop_fixed_size(half_img, center)
 
-                    # --- 质量判定 ---
-                    if padding_ratio > extractor.max_padding_ratio:
-                        msg = f"{new_sample_id}_es{i}: Padding {padding_ratio:.2%} > {extractor.max_padding_ratio:.0%}"
-                        padding_reject_log.append(msg)
-
-                        # 方案 A: 严格剔除
-                        eye_success = False
-                        break
-
+                    # 先保存图片，再检查质量
                     save_name = f"es_{i}.png"
                     save_path = os.path.join(sample_out_dir, save_name)
                     cv2.imwrite(save_path, roi)
 
+                    # 记录路径
                     rel_save_path = os.path.relpath(save_path, project_root).replace('\\', '/')
                     new_row[f'path_{i}'] = rel_save_path
 
+                    # --- 质量判定 ---
+                    if padding_ratio > extractor.max_padding_ratio:
+                        # 记录详细原因
+                        reason_msg = f"低质量 (es_{i}): 填充比例 {padding_ratio:.2%} 超过阈值 {extractor.max_padding_ratio:.0%}"
+                        reject_records.append({
+                            "Sample_ID": new_sample_id,
+                            "Reason": reason_msg
+                        })
+
+                        # 标记失败，跳出当前眼的循环，不存入最终 CSV
+                        eye_success = False
+                        break
+
                 except Exception as e:
                     print(f"❌ {new_sample_id} - es_{i} 处理错误: {e}")
+                    reject_records.append({
+                        "Sample_ID": new_sample_id,
+                        "Reason": f"程序异常: {str(e)}"
+                    })
                     eye_success = False
                     break
 
-            # [重要修正] 后处理：决定是否保留数据
+            # 后处理：
+            # 如果成功，加入 final_rows
+            # 如果失败，不删除文件夹，保留已生成的图片供检查
             if eye_success:
                 final_rows.append(new_row)
-            else:
-                # [新增] 如果该样本判定失败（缺图或Padding超标），删除刚刚创建的文件夹
-                # 保持数据集目录干净，不留无用文件
-                if os.path.exists(sample_out_dir):
-                    try:
-                        shutil.rmtree(sample_out_dir)
-                    except OSError as e:
-                        print(f"⚠️ 警告: 无法清理残留目录 {sample_out_dir}: {e}")
+            # else:
+            #     这里什么都不做，文件夹保留，只是不把数据加入到 processed_dataset_split.csv 中
 
-    # 保存最终大表
+    # 保存合格数据表
     out_df = pd.DataFrame(final_rows)
     out_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
 
-    if padding_reject_log:
-        log_path = os.path.join(project_root, config['paths']['logs_dir'], "roi_padding_rejects.log")
-        with open(log_path, 'w') as f:
-            f.write("\n".join(padding_reject_log))
-        print(f"⚠️ 已剔除 {len(padding_reject_log)} 组填充过度的样本，日志: {log_path}")
+    # 保存剔除原因 CSV
+    if reject_records:
+        reject_df = pd.DataFrame(reject_records)
+        # 确保列顺序
+        reject_df = reject_df[["Sample_ID", "Reason"]]
+        reject_df.to_csv(REJECT_CSV, index=False, encoding='utf-8-sig')
+        print(f"⚠️ 已剔除 {len(reject_records)} 组低质量样本")
+        print(f"📋 剔除详情已保存至: {REJECT_CSV}")
+    else:
+        print("✅ 没有样本被剔除")
 
     print(f"\n✅ 处理完成!")
     print(f"   原始样本: {len(df)}")
-    print(f"   生成单眼样本: {len(out_df)}")
-    print(f"   输出文件: {OUTPUT_CSV}")
+    print(f"   生成有效样本: {len(out_df)}")
+    print(f"   有效数据表: {OUTPUT_CSV}")
 
 
 if __name__ == "__main__":

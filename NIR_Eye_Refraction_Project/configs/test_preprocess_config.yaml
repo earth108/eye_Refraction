@@ -3,7 +3,6 @@
 paths:
   # --- 数据路径配置 ---
   # 注意：这些是相对于项目根目录的路径
-  # 如果你要跑全量数据，请把前面的 "test/" 去掉
   raw_dataset_dir: "test/data/raw"             # 原始数据存放路径
   output_dir: "test/data/processed"            # (ROI处理阶段用)
   output_csv: "test/data/metadata/cleaned_dataset.csv" # 清洗结果
@@ -12,15 +11,19 @@ paths:
 
 roi_params:
   target_size: 224
-  #  常量填充
+  # 常量填充
   padding_mode: "constant"
-  # 填充颜色，0代表黑色
+  #填充颜色，0代表黑色
   padding_value: 0
 
-  # [新增] 垂直搜索限制 (忽略顶部和底部的比例)
-  # 忽略顶部 15% 和底部 20% 的区域，防止光斑干扰
+  # 垂直搜索限制 (忽略顶部和底部的比例)
+  # 忽略顶部 15% 和底部 15% 的区域，防止光斑干扰
   vertical_margin_top: 0.15
-  vertical_margin_bottom: 0.20
+  vertical_margin_bottom: 0.15
+
+  # [新增] 最大填充比例阈值 (0.0 - 1.0)
+  # 如果填充面积超过这个比例（例如 40%），则认为该 ROI 主要是由背景凑数的，标记为低质量
+  max_padding_ratio: 0.4
 
 qc_params:
   # 必须的文件列表
@@ -34,10 +37,9 @@ qc_params:
 
   # [亮度阈值] (全图均值 0-255)
   # 背景是黑的，所以下限要非常低
-  dark_threshold: 3.0   #欠曝阈值
-  sat_threshold: 250.0   #过曝阈值
+  dark_threshold: 3.0
+  sat_threshold: 250.0
 
-  # [核心参数：反射斑阈值] (0-255)
+  # [反射斑阈值] (0-255)
   # 只要眼睛区域内有像素亮度超过这个值，就认为“拍到了红外反光”，即为有效
-  # 你的 es_0.jpg 瞳孔极亮，设为 100 是安全的
   reflection_threshold: 175.0

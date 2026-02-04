@@ -58,12 +58,15 @@ NIR_Eye_Refraction_Project/
    - 以瞳孔为中心裁剪 **224x224** 区域，保持原始分辨率不缩放（微距视野）。
 4. **黑色填充 (Zero Padding)**：
    - 边缘区域使用 **0 (黑色)** 填充。
+5. **填充比例质检**：
+   - 自动计算裁剪后图像中黑色填充区域的几何占比。
+   - 若填充比例超过阈值（如 40%），说明眼球过于靠近图像边缘导致信息缺失，程序将自动剔除该样本并记录原因。
 
 **输出产物：**
 
 - `data/processed/`: 存放处理后的 PNG 图像（按 `uuid_side` 分文件夹）。
 - `data/metadata/processed_dataset_split.csv`: **最终用于训练的数据表**。
-
+- `logs/roi_reject_details.csv`: ROI 处理阶段被剔除的样本清单（包含因 Padding 比例过大被拒的详细原因）
 
 
 ## ⚙️ 参数配置
