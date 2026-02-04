@@ -1,4 +1,4 @@
-### 📂 项目结构 (Project Structure)
+### 📂 项目结构
 
 ```
 NIR_Eye_Refraction_Project/
@@ -21,7 +21,7 @@ NIR_Eye_Refraction_Project/
 
 
 
-### 第一步：数据清洗与标签解析 (Data Cleaning)
+### 第一步：数据清洗与标签解析
 
 遍历原始数据文件夹，解析文件名中的屈光度标签，并进行图像质量检查（曝光、模糊、红外光斑检测）。
 
@@ -39,7 +39,7 @@ NIR_Eye_Refraction_Project/
 
 
 
-### 第二步：ROI 提取与双眼分割 (ROI Extraction & Splitting)
+### 第二步：ROI 提取与双眼分割 
 
 读取第一步生成的 CSV，定位瞳孔中心，裁剪出标准化的眼部图像，并将**左右眼拆分为独立样本**。
 
@@ -66,13 +66,13 @@ NIR_Eye_Refraction_Project/
 
 
 
-## ⚙️ 参数配置 (Configuration)
+## ⚙️ 参数配置
 
 所有关键参数均可在 `configs/preprocess_config.yaml` 中动态调整，无需修改代码。
 
 ##### 
 
-#### 路径配置 (Paths)
+#### 路径配置
 
 ```
 paths:
@@ -81,7 +81,7 @@ paths:
   output_csv: "data/metadata/cleaned_dataset.csv"
 ```
 
-#### ROI 参数 (ROI Params)
+#### ROI 参数
 
 ```
 
@@ -107,7 +107,7 @@ qc_params:
 
 
 
-## 📊 数据集格式说明 (Output Format)
+## 📊 数据集格式说明 
 
 最终生成的 `processed_dataset_split.csv` 格式如下，可直接用于 PyTorch `DataLoader`：
 

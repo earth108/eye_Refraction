@@ -21,6 +21,10 @@ roi_params:
   vertical_margin_top: 0.15
   vertical_margin_bottom: 0.15
 
+  # [新增] 最大填充比例阈值 (0.0 - 1.0)
+  # 如果填充面积超过这个比例（例如 40%），则认为该 ROI 主要是由背景凑数的，标记为低质量
+  max_padding_ratio: 0.4
+
 qc_params:
   # 必须的文件列表
   required_files: ["es_0", "es_1", "es_2", "es_3", "es_4", "es_5"]
@@ -34,9 +38,8 @@ qc_params:
   # [亮度阈值] (全图均值 0-255)
   # 背景是黑的，所以下限要非常低
   dark_threshold: 3.0
-  sat_threshold: 254.0
+  sat_threshold: 250.0
 
-  # [核心参数：反射斑阈值] (0-255)
+  # [反射斑阈值] (0-255)
   # 只要眼睛区域内有像素亮度超过这个值，就认为“拍到了红外反光”，即为有效
-  # 你的 es_0.jpg 瞳孔极亮，设为 100 是安全的
   reflection_threshold: 175.0

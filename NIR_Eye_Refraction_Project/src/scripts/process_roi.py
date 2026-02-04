@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 import yaml
+import shutil  # [新增] 用于删除废弃的文件夹
 
 # --- 系统路径设置 ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -18,6 +19,7 @@ class ROIExtractor:
         self.config = config
         self.roi_params = config['roi_params']
         self.target_size = self.roi_params.get('target_size', 224)
+        self.max_padding_ratio = self.roi_params.get('max_padding_ratio', 0.4)
 
         # 填充模式配置
         mode_str = self.roi_params.get('padding_mode', 'constant')
@@ -38,6 +40,10 @@ class ROIExtractor:
         # 1. 定义有效搜索区域 (ROI Mask)
         y_start = int(h * self.margin_top)
         y_end = int(h * (1 - self.margin_bottom))
+
+        # 防御性编程：防止 ROI 高度为负
+        if y_start >= y_end:
+            y_start, y_end = 0, h
 
         # 截取中间区域进行分析
         search_region = image_half[y_start:y_end, :]
@@ -76,6 +82,17 @@ class ROIExtractor:
         pad_left = abs(min(0, x1))
         pad_right = max(0, x2 - w)
 
+        # 有效宽 = 目标宽 - 左填充 - 右填充
+        valid_w = max(0, self.target_size - pad_left - pad_right)
+        # 有效高 = 目标高 - 上填充 - 下填充
+        valid_h = max(0, self.target_size - pad_top - pad_bottom)
+
+        valid_area = valid_w * valid_h
+        total_area = self.target_size * self.target_size
+
+        # [优化] 显式转为浮点数计算，防止极少数环境下的整除问题
+        padding_ratio = 1.0 - (float(valid_area) / float(total_area))
+
         # 执行填充
         if any([pad_top, pad_bottom, pad_left, pad_right]):
             image = cv2.copyMakeBorder(
@@ -89,7 +106,7 @@ class ROIExtractor:
             y2 += pad_top
 
         roi = image[y1:y2, x1:x2]
-        return roi
+        return roi, padding_ratio
 
 
 def main():
@@ -107,7 +124,6 @@ def main():
     # 路径
     INPUT_CSV = os.path.join(project_root, config['paths']['output_csv'])
     OUTPUT_DIR = os.path.join(project_root, config['paths']['output_dir'])
-    # 新生成的 CSV 文件名建议区分一下
     OUTPUT_CSV = os.path.join(project_root, os.path.dirname(config['paths']['output_csv']),
                               "processed_dataset_split.csv")
 
@@ -121,35 +137,29 @@ def main():
     print(f"🚀 开始 ROI 分割处理 (双眼拆分 + 抗干扰), 源样本数: {len(df)}")
 
     final_rows = []
+    padding_reject_log = []
 
     for index, row in tqdm(df.iterrows(), total=len(df)):
         sample_id = row['sample_id']
         folder_rel_path = row['folder_path']
         folder_abs_path = os.path.join(project_root, folder_rel_path)
 
-        # 我们可以为每个原始样本生成两个新样本：一个左眼，一个右眼
-        # 定义两个子样本的元数据容器
-        # 注意：这里我们保留原始标签。S_R, C_R 是右眼标签；S_L, C_L 是左眼标签。
-        # 在拆分后，每个样本将只关注单侧眼睛。
-
         eyes_info = [
-            {'side': 'R', 'suffix': '_R', 'col_prefix': '_R', 'img_part': 'left'},  # 图片左半边是右眼
-            {'side': 'L', 'suffix': '_L', 'col_prefix': '_L', 'img_part': 'right'}  # 图片右半边是左眼
+            {'side': 'R', 'suffix': '_R', 'col_prefix': '_R', 'img_part': 'left'},
+            {'side': 'L', 'suffix': '_L', 'col_prefix': '_L', 'img_part': 'right'}
         ]
 
         for eye in eyes_info:
-            # 构建新的 sample_id，例如 uuid_123_L
             new_sample_id = f"{sample_id}{eye['suffix']}"
             sample_out_dir = os.path.join(OUTPUT_DIR, new_sample_id)
+
+            # 确保目录存在（如果是重跑，覆盖模式下这个文件夹可能已经有旧图了，不过后续会覆盖）
             os.makedirs(sample_out_dir, exist_ok=True)
 
-            # 构建新行数据
             new_row = {
                 'sample_id': new_sample_id,
                 'original_id': sample_id,
                 'side': eye['side'],
-                # 只保留当前侧眼睛的标签，统一列名为 S, C, A
-                # 这样训练时不需要区分左右眼列名
                 'S': row.get(f"S{eye['col_prefix']}"),
                 'C': row.get(f"C{eye['col_prefix']}"),
                 'A': row.get(f"A{eye['col_prefix']}"),
@@ -157,7 +167,6 @@ def main():
                 'cos_2A': row.get(f"cos_2A{eye['col_prefix']}"),
             }
 
-            # 处理该侧眼睛的 6 张图
             eye_success = True
 
             for i in range(6):
@@ -176,27 +185,28 @@ def main():
                 h, w = full_img.shape
                 mid_x = w // 2
 
-                # 1. 切割半图
                 if eye['img_part'] == 'left':
-                    # 图片左半边 -> 对应右眼 (Patient Right)
                     half_img = full_img[:, 0:mid_x]
                 else:
-                    # 图片右半边 -> 对应左眼 (Patient Left)
                     half_img = full_img[:, mid_x:w]
 
                 try:
-                    # 2. 抗干扰定位
                     center, max_val = extractor.find_pupil_center_robust(half_img)
+                    roi, padding_ratio = extractor.crop_fixed_size(half_img, center)
 
-                    # 3. 裁剪 (黑色填充)
-                    roi = extractor.crop_fixed_size(half_img, center)
+                    # --- 质量判定 ---
+                    if padding_ratio > extractor.max_padding_ratio:
+                        msg = f"{new_sample_id}_es{i}: Padding {padding_ratio:.2%} > {extractor.max_padding_ratio:.0%}"
+                        padding_reject_log.append(msg)
 
-                    # 4. 保存
+                        # 方案 A: 严格剔除
+                        eye_success = False
+                        break
+
                     save_name = f"es_{i}.png"
                     save_path = os.path.join(sample_out_dir, save_name)
                     cv2.imwrite(save_path, roi)
 
-                    # 5. 记录路径
                     rel_save_path = os.path.relpath(save_path, project_root).replace('\\', '/')
                     new_row[f'path_{i}'] = rel_save_path
 
@@ -205,16 +215,31 @@ def main():
                     eye_success = False
                     break
 
+            # [重要修正] 后处理：决定是否保留数据
             if eye_success:
                 final_rows.append(new_row)
+            else:
+                # [新增] 如果该样本判定失败（缺图或Padding超标），删除刚刚创建的文件夹
+                # 保持数据集目录干净，不留无用文件
+                if os.path.exists(sample_out_dir):
+                    try:
+                        shutil.rmtree(sample_out_dir)
+                    except OSError as e:
+                        print(f"⚠️ 警告: 无法清理残留目录 {sample_out_dir}: {e}")
 
     # 保存最终大表
     out_df = pd.DataFrame(final_rows)
     out_df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8-sig')
 
+    if padding_reject_log:
+        log_path = os.path.join(project_root, config['paths']['logs_dir'], "roi_padding_rejects.log")
+        with open(log_path, 'w') as f:
+            f.write("\n".join(padding_reject_log))
+        print(f"⚠️ 已剔除 {len(padding_reject_log)} 组填充过度的样本，日志: {log_path}")
+
     print(f"\n✅ 处理完成!")
     print(f"   原始样本: {len(df)}")
-    print(f"   生成单眼样本: {len(out_df)} (理想情况应该是原始的2倍)")
+    print(f"   生成单眼样本: {len(out_df)}")
     print(f"   输出文件: {OUTPUT_CSV}")
 
 
